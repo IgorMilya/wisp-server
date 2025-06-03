@@ -1,0 +1,133 @@
+use axum::{
+    routing::{get, post, delete},
+    Router, Json, extract::{Path, Json as JsonExtract},
+    http::StatusCode, response::IntoResponse,
+};
+use mongodb::{bson::doc, Client, Collection};
+use mongodb::bson::oid::ObjectId;
+use serde::{Serialize, Deserialize};
+use std::net::SocketAddr;
+use mongodb::Database;
+use tokio::net::TcpListener;
+use futures::TryStreamExt;
+use tower_http::cors::CorsLayer;
+use mongodb::bson::Document;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BlacklistedNetwork {
+    #[serde(rename = "_id")]
+    pub id: ObjectId,
+    pub ssid: String,
+    pub bssid: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BlacklistedNetworkResponse {
+    pub id: String,
+    pub ssid: String,
+    pub bssid: String,
+}
+
+
+#[derive(Debug, Deserialize)]
+pub struct NewBlacklistEntry {
+    ssid: String,
+    bssid: String,
+}
+
+// Global MongoDB collection (you can use Arc for better structure)
+async fn get_collection() -> mongodb::error::Result<Database> {
+    let db_url = "mongodb+srv://imilay11:yiiWyudxZU2RIy0n@wisp-app.j5ndz0i.mongodb.net/?retryWrites=true&w=majority&appName=Wisp-App";
+    let client = Client::with_uri_str(db_url)
+        .await
+        .expect("Failed to connect to MongoDB");
+    let db = client.database("WISP-APP");
+    Ok(db)
+}
+
+
+async fn get_blacklist() -> impl IntoResponse {
+    let database = get_collection().await.expect("Failed to connect to DB");
+    let my_coll: Collection<BlacklistedNetwork> = database.collection("Blacklist");
+
+    let mut cursor = match my_coll.find(doc! {}).await {
+        Ok(cursor) => cursor,
+        Err(err) => {
+            let body = Json(serde_json::json!({ "error": err.to_string() }));
+            return (StatusCode::INTERNAL_SERVER_ERROR, body).into_response();
+        }
+    };
+
+    let mut results = Vec::new();
+    while let Some(doc) = cursor.try_next().await.unwrap_or(None) {
+        results.push(BlacklistedNetworkResponse {
+            id: doc.id.to_hex(),
+            ssid: doc.ssid,
+            bssid: doc.bssid,
+        });
+    }
+
+    Json(results).into_response()
+}
+
+
+
+async fn delete_from_blacklist(
+    Path(id): Path<String>
+) -> impl IntoResponse {
+    let db = get_collection().await.expect("DB connection");
+    let coll: Collection<BlacklistedNetwork> = db.collection("Blacklist");
+
+    let obj_id = match ObjectId::parse_str(&id) {
+        Ok(oid) => oid,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid id"}))).into_response(),
+    };
+
+    match coll.delete_one(doc! { "_id": obj_id }).await {
+        Ok(res) if res.deleted_count == 1 =>
+            (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))).into_response(),
+        Ok(_) =>
+            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
+        Err(e) =>
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+
+async fn add_to_blacklist(
+    JsonExtract(payload): JsonExtract<NewBlacklistEntry>,
+) -> impl IntoResponse {
+    let db = get_collection().await.expect("DB connection");
+    let coll: Collection<Document> = db.collection("Blacklist");
+
+    let new_doc = doc! {
+        "ssid": payload.ssid,
+        "bssid": payload.bssid,
+    };
+
+    match coll.insert_one(new_doc).await {
+        Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({"status": "added"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+
+#[tokio::main]
+async fn main() {
+    let cors = CorsLayer::very_permissive();
+
+    let app = Router::new()
+        .route("/blacklist", get(get_blacklist).post(add_to_blacklist))
+        .route("/blacklist/{id}", delete(delete_from_blacklist))
+        .layer(cors);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let listener = TcpListener::bind(addr).await.unwrap();
+
+    println!("Listening on http://{}", addr);
+
+    axum::serve(listener, app.into_make_service())
+        .await
+        .unwrap();
+}
+
