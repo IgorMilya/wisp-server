@@ -1,17 +1,27 @@
 use axum::{
-    routing::{get, post, delete},
-    Router, Json, extract::{Path, Json as JsonExtract},
-    http::StatusCode, response::IntoResponse,
+    Json, Router,
+    extract::{Json as JsonExtract, Path},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{delete, get},
 };
-use mongodb::{bson::doc, Client, Collection};
-use mongodb::bson::oid::ObjectId;
-use serde::{Serialize, Deserialize};
-use std::net::SocketAddr;
-use mongodb::Database;
-use tokio::net::TcpListener;
 use futures::TryStreamExt;
+use mongodb::Database;
+use mongodb::bson::oid::ObjectId;
+use mongodb::bson::{DateTime, Document};
+use mongodb::{Client, Collection, bson::doc};
+use serde::Serializer;
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
-use mongodb::bson::Document;
+
+fn serialize_datetime_as_iso_string<S>(date: &DateTime, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&date.to_rfc3339_string())
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlacklistedNetwork {
@@ -19,6 +29,8 @@ pub struct BlacklistedNetwork {
     pub id: ObjectId,
     pub ssid: String,
     pub bssid: String,
+    pub timestamp: DateTime,
+    pub reason: Option<String>, // <-- added reason
 }
 
 #[derive(Debug, Serialize)]
@@ -26,13 +38,16 @@ pub struct BlacklistedNetworkResponse {
     pub id: String,
     pub ssid: String,
     pub bssid: String,
+    #[serde(serialize_with = "serialize_datetime_as_iso_string")]
+    pub timestamp: DateTime,
+    pub reason: Option<String>,
 }
-
 
 #[derive(Debug, Deserialize)]
 pub struct NewBlacklistEntry {
     ssid: String,
     bssid: String,
+    reason: Option<String>, // <-- allow client to send reason
 }
 
 // Global MongoDB collection (you can use Arc for better structure)
@@ -44,7 +59,6 @@ async fn get_collection() -> mongodb::error::Result<Database> {
     let db = client.database("WISP-APP");
     Ok(db)
 }
-
 
 async fn get_blacklist() -> impl IntoResponse {
     let database = get_collection().await.expect("Failed to connect to DB");
@@ -64,35 +78,47 @@ async fn get_blacklist() -> impl IntoResponse {
             id: doc.id.to_hex(),
             ssid: doc.ssid,
             bssid: doc.bssid,
+            timestamp: doc.timestamp,
+            reason: doc.reason,
         });
     }
 
     Json(results).into_response()
 }
 
-
-
-async fn delete_from_blacklist(
-    Path(id): Path<String>
-) -> impl IntoResponse {
+async fn delete_from_blacklist(Path(id): Path<String>) -> impl IntoResponse {
     let db = get_collection().await.expect("DB connection");
     let coll: Collection<BlacklistedNetwork> = db.collection("Blacklist");
 
     let obj_id = match ObjectId::parse_str(&id) {
         Ok(oid) => oid,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid id"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid id"})),
+            )
+                .into_response();
+        }
     };
 
     match coll.delete_one(doc! { "_id": obj_id }).await {
-        Ok(res) if res.deleted_count == 1 =>
-            (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))).into_response(),
-        Ok(_) =>
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
-        Err(e) =>
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(res) if res.deleted_count == 1 => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "deleted"})),
+        )
+            .into_response(),
+        Ok(_) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
-
 
 async fn add_to_blacklist(
     JsonExtract(payload): JsonExtract<NewBlacklistEntry>,
@@ -103,14 +129,23 @@ async fn add_to_blacklist(
     let new_doc = doc! {
         "ssid": payload.ssid,
         "bssid": payload.bssid,
+        "timestamp": DateTime::now(),
+        "reason": payload.reason.unwrap_or("Manually added".into()),
     };
 
     match coll.insert_one(new_doc).await {
-        Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({"status": "added"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(_) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"status": "added"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
-
 
 #[tokio::main]
 async fn main() {
@@ -130,4 +165,3 @@ async fn main() {
         .await
         .unwrap();
 }
-
