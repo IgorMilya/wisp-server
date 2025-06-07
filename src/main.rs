@@ -52,6 +52,7 @@ pub struct NewBlacklistEntry {
 
 async fn get_collection() -> mongodb::error::Result<Database> {
     let db_url = "mongodb+srv://imilay11:yiiWyudxZU2RIy0n@wisp-app.j5ndz0i.mongodb.net/?retryWrites=true&w=majority&appName=Wisp-App";
+    
     let client = Client::with_uri_str(db_url)
         .await
         .expect("Failed to connect to MongoDB");
