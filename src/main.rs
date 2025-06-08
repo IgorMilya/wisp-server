@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
+use dotenvy::dotenv;
+use std::env;
 
 fn serialize_datetime_as_iso_string<S>(date: &DateTime, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -54,8 +56,9 @@ pub struct NewBlacklistEntry {
 }
 
 async fn get_collection() -> mongodb::error::Result<Database> {
-    let db_url = "mongodb+srv://imilay11:yiiWyudxZU2RIy0n@wisp-app.j5ndz0i.mongodb.net/?retryWrites=true&w=majority&appName=Wisp-App";
-
+    let db_url = env::var("MONGO_DB_URL")
+        .expect("MONGO_DB_URL not set in environment variables");
+    
     let client = Client::with_uri_str(db_url)
         .await
         .expect("Failed to connect to MongoDB");
@@ -321,6 +324,7 @@ async fn add_to_whitelist(
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
     let cors = CorsLayer::very_permissive();
 
     let app = Router::new()
