@@ -58,7 +58,7 @@ pub struct NewBlacklistEntry {
 async fn get_collection() -> mongodb::error::Result<Database> {
     let db_url = env::var("MONGO_DB_URL")
         .expect("MONGO_DB_URL not set in environment variables");
-    
+
     let client = Client::with_uri_str(db_url)
         .await
         .expect("Failed to connect to MongoDB");
@@ -334,10 +334,7 @@ async fn main() {
         .route("/whitelist/{id}", delete(delete_from_whitelist))
         .layer(cors);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    let listener = TcpListener::bind(addr).await.unwrap();
-
-    println!("Listening on http://{}", addr);
+    let listener = TcpListener::bind("localhost:3000").await.unwrap();
 
     axum::serve(listener, app.into_make_service())
         .await
