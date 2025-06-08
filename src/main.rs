@@ -1,10 +1,11 @@
 use axum::{
     Json, Router,
-    extract::{Json as JsonExtract, Path},
+    extract::{Json as JsonExtract, Path, Query},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get},
 };
+use chrono::{TimeZone, Utc};
 use futures::TryStreamExt;
 use mongodb::Database;
 use mongodb::bson::oid::ObjectId;
@@ -12,6 +13,7 @@ use mongodb::bson::{DateTime, Document};
 use mongodb::{Client, Collection, bson::doc};
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
@@ -20,8 +22,9 @@ fn serialize_datetime_as_iso_string<S>(date: &DateTime, serializer: S) -> Result
 where
     S: Serializer,
 {
-    serializer.serialize_str(&date.to_rfc3339_string())
+    serializer.serialize_str(&date.try_to_rfc3339_string().unwrap_or_else(|_| "Invalid Date".into()))
 }
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlacklistedNetwork {
@@ -52,7 +55,7 @@ pub struct NewBlacklistEntry {
 
 async fn get_collection() -> mongodb::error::Result<Database> {
     let db_url = "mongodb+srv://imilay11:yiiWyudxZU2RIy0n@wisp-app.j5ndz0i.mongodb.net/?retryWrites=true&w=majority&appName=Wisp-App";
-    
+
     let client = Client::with_uri_str(db_url)
         .await
         .expect("Failed to connect to MongoDB");
@@ -60,11 +63,35 @@ async fn get_collection() -> mongodb::error::Result<Database> {
     Ok(db)
 }
 
-async fn get_blacklist() -> impl IntoResponse {
+async fn get_blacklist(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
     let database = get_collection().await.expect("Failed to connect to DB");
     let my_coll: Collection<BlacklistedNetwork> = database.collection("Blacklist");
 
-    let mut cursor = match my_coll.find(doc! {}).await {
+    let ssid_query = params.get("ssid");
+    let date_query = params.get("date");
+
+    let mut filter = doc! {};
+
+    if let Some(ssid) = ssid_query {
+        filter.insert("ssid", doc! { "$regex": ssid, "$options": "i" });
+    }
+
+    if let Some(date_str) = date_query {
+        if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            let start = Utc.from_utc_datetime(&parsed_date.and_hms_opt(0, 0, 0).unwrap());
+            let end = Utc.from_utc_datetime(&parsed_date.and_hms_opt(23, 59, 59).unwrap());
+
+            filter.insert(
+                "timestamp",
+                doc! {
+                    "$gte": DateTime::from_millis(start.timestamp_millis()),
+                    "$lte": DateTime::from_millis(end.timestamp_millis()),
+                },
+            );
+        }
+    }
+
+    let mut cursor = match my_coll.find(filter).await {
         Ok(cursor) => cursor,
         Err(err) => {
             let body = Json(serde_json::json!({ "error": err.to_string() }));
@@ -85,6 +112,7 @@ async fn get_blacklist() -> impl IntoResponse {
 
     Json(results).into_response()
 }
+
 
 async fn delete_from_blacklist(Path(id): Path<String>) -> impl IntoResponse {
     let db = get_collection().await.expect("DB connection");
@@ -171,11 +199,46 @@ pub struct NewWhitelistEntry {
     ssid: String,
     bssid: String,
 }
-async fn get_whitelist() -> impl IntoResponse {
+
+/// Accepts optional `ssid` and `date` query parameters.
+async fn get_whitelist(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
     let database = get_collection().await.expect("Failed to connect to DB");
     let my_coll: Collection<WhitelistedNetwork> = database.collection("Whitelist");
 
-    let mut cursor = match my_coll.find(doc! {}).await {
+    // Extract optional params
+    let ssid_query = params.get("ssid");
+    let date_query = params.get("date"); // Expected format: YYYY-MM-DD
+
+    let mut filter = doc! {};
+
+    // SSID case-insensitive partial match
+    if let Some(ssid) = ssid_query {
+        filter.insert(
+            "ssid",
+            doc! {
+                "$regex": ssid,
+                "$options": "i"  // Case-insensitive
+            },
+        );
+    }
+
+    // Timestamp exact date match (00:00 to 23:59)
+    if let Some(date_str) = date_query {
+        if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            let start = Utc.from_utc_datetime(&parsed_date.and_hms_opt(0, 0, 0).unwrap());
+            let end = Utc.from_utc_datetime(&parsed_date.and_hms_opt(23, 59, 59).unwrap());
+
+            filter.insert(
+                "timestamp",
+                doc! {
+                    "$gte": DateTime::from_millis(start.timestamp_millis()),
+                    "$lte": DateTime::from_millis(end.timestamp_millis()),
+                },
+            );
+        }
+    }
+
+    let mut cursor = match my_coll.find(filter).await {
         Ok(cursor) => cursor,
         Err(err) => {
             let body = Json(serde_json::json!({ "error": err.to_string() }));
