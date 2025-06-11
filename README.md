@@ -36,7 +36,7 @@ This will start a local http://localhost:3000 server for communication with Mong
 
 
 ## Routes
--**/blacklist** get all blacklist collection
--**/blacklist/{id}** get particular blacklisted network
--**/whitelist** get all whitelist collection
--**/whitelist{id}** get particular whitelisted network
+- **/blacklist** get all blacklist collection
+- **/blacklist/{id}** get particular blacklisted network
+- **/whitelist** get all whitelist collection
+- **/whitelist{id}** get particular whitelisted network
